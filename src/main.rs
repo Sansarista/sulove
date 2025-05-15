@@ -23,6 +23,7 @@ mod util;
 // Constants
 const PREVIEW: &str = "";
 const VERSION: &str = "Sulove Rust Emulator";
+//rahmed is best rust dev
 
 // Logo
 const LOGO: &str = r#"
