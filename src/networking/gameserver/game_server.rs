@@ -41,10 +41,13 @@ impl Server for GameServer {
         // Create a new runtime for the server
         let runtime = Runtime::new()?;
         
-        // Store the runtime in a mutable reference
-        // This works because Runtime has an internal Arc and can be cloned safely
-        let mut this = self.to_owned();
-        this.runtime = Some(runtime.clone());
+        // Store the runtime in the struct
+        // We need interior mutability since we have an immutable reference to self
+        let this = unsafe { &*(self as *const _ as *mut GameServer) };
+        this.runtime = Some(runtime);
+        
+        // Get a reference to the runtime we just stored
+        let runtime = self.runtime.as_ref().unwrap();
         
         // Spawn the server task
         runtime.spawn(async move {
@@ -109,7 +112,7 @@ impl Server for GameServer {
 
 impl GameServer {
     pub fn new(host: String, port: u16) -> io::Result<Self> {
-        let config = Config::get_instance(); // Assuming there's a Config singleton
+        let config = ConfigurationManager::get_instance(); // Assuming there's a Config singleton
         
         // Get thread counts from config
         let boss_threads = config.get_int("io.bossgroup.threads") as usize;
