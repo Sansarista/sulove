@@ -7,7 +7,6 @@ use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 
 use crate::core::configuration_manager::ConfigurationManager;
-use crate::get_config;
 use crate::messages::packet_manager::PacketManager;
 use crate::habbohotel::gameclients::GameClientManager;
 use crate::networking::Server;
@@ -112,11 +111,12 @@ impl Server for GameServer {
 
 impl GameServer {
     pub fn new(host: String, port: u16) -> io::Result<Self> {
-        let config = ConfigurationManager::get_instance(); // Assuming there's a Config singleton
+        // Initialize configuration manager with the proper config path
+        let config = ConfigurationManager::new("config.ini").expect("Failed to load configuration");
         
         // Get thread counts from config
-        let boss_threads = config.get_int("io.bossgroup.threads") as usize;
-        let worker_threads = config.get_int("io.workergroup.threads") as usize;
+        let boss_threads = (config.get_int("io.bossgroup.threads").unwrap_or(1)) as usize;
+        let worker_threads = (config.get_int("io.workergroup.threads").unwrap_or(4)) as usize;
         
         Ok(GameServer {
             name: String::from("Game Server"),
