@@ -1,5 +1,5 @@
 use crate::habbohotel::gameclients::GameClient;
-use crate::crypto::HabboRC4;
+use crate::crypto::habbo_rc4::HabboRC4;
 
 /// A Rust equivalent of Java's AttributeKey pattern
 pub struct GameServerAttributes;

@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::thread;
-// allah is the biggest
+
 use log::{debug, info, warn};
 use tokio::runtime::Runtime;
 use num_cpus;

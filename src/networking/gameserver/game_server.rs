@@ -3,8 +3,10 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use log::{error, info, debug};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
+use bytes::BytesMut;
 
 use crate::core::configuration_manager::ConfigurationManager;
 use crate::messages::packet_manager::PacketManager;
@@ -136,20 +138,135 @@ impl GameServer {
         packet_manager: Arc<Mutex<PacketManager>>,
         game_client_manager: Arc<Mutex<GameClientManager>>
     ) {
-        // This would implement the equivalent of the netty pipeline in Java
-        // For each connection, we'd:
-        // 1. Set up policy decoder
-        // 2. Set up byte frame decoder
-        // 3. Set up byte decoder
-        // 4. Add message logger if debug is enabled
-        // 5. Add idle timeout handler
-        // 6. Add message rate limiter
-        // 7. Add message handler
-        // 8. Add message encoder
-        // 9. Add message logger if debug is enabled
+        // Wrap the socket in an Arc<Mutex> for shared access
+        let socket = Arc::new(Mutex::new(socket));
         
-        // In a real implementation, this would use tokio's codec system
-        // or a custom protocol implementation
+        // Get configuration for debug settings
+        let config = ConfigurationManager::new("config.ini").expect("Failed to load configuration");
+        let debug_enabled = config.get_bool("debug.mode").unwrap_or(false);
+        
+        // Create a reference to self for the handlers
+        let game_server_ref = Arc::new(Self {
+            name: String::from("Game Server"),
+            host: String::new(),
+            port: 0,
+            boss_threads: 0,
+            worker_threads: 0,
+            runtime: None,
+            packet_manager: packet_manager.clone(),
+            game_client_manager: game_client_manager.clone(),
+        });
+        
+        // Create the handler chain
+        let policy_decoder = GamePolicyDecoder::new();
+        let frame_decoder = GameByteFrameDecoder::new();
+        let byte_decoder = GameByteDecoder::new();
+        
+        // Optional message logger for debug
+        let message_logger = if debug_enabled {
+            Some(GameClientMessageLogger::new(game_server_ref.clone()))
+        } else {
+            None
+        };
+        
+        // Rate limiter and message handler
+        let rate_limiter = GameMessageRateLimit::new();
+        let message_handler = GameMessageHandler::new(game_server_ref.clone());
+        
+        // Register the client channel
+        if let Err(e) = message_handler.channel_registered(socket.clone()).await {
+            error!("Failed to register client: {}", e);
+            return;
+        }
+        
+        // Set up async processing loop for the connection
+        loop {
+            // Read data from the socket
+            let mut socket_guard = match socket.lock().await {
+                Ok(guard) => guard,
+                Err(_) => {
+                    error!("Failed to lock socket mutex");
+                    break;
+                }
+            };
+            
+            // Create a buffer to read into
+            let mut buf = BytesMut::with_capacity(4096);
+            
+            // Read from socket
+            match socket_guard.read_buf(&mut buf).await {
+                Ok(0) => {
+                    // Connection closed
+                    debug!("Connection closed by client: {}", addr);
+                    break;
+                },
+                Ok(_) => {
+                    // Process the data through the decoder chain
+                    // First, check for policy request
+                    match policy_decoder.decode(&mut buf) {
+                        Ok(Some((policy_data, is_policy))) => {
+                            if is_policy {
+                                // Send policy response and close connection
+                                if let Err(e) = socket_guard.write_all(&policy_data).await {
+                                    error!("Failed to send policy response: {}", e);
+                                }
+                                break; // Close connection after policy response
+                            } else {
+                                // Continue with frame decoding
+                                let mut framed_data = policy_data;
+                                
+                                // Apply frame decoder
+                                if let Ok(Some(frame)) = frame_decoder.decode(&mut framed_data) {
+                                    // Apply byte decoder
+                                    if let Ok(Some(message)) = byte_decoder.decode(&mut frame) {
+                                        // Apply message logger if enabled
+                                        let logged_message = if let Some(ref mut logger) = message_logger {
+                                            match logger.decode(&mut BytesMut::new()) {
+                                                Ok(Some(m)) => m,
+                                                _ => message,
+                                            }
+                                        } else {
+                                            message
+                                        };
+                                        
+                                        // Apply rate limiter
+                                        if let Ok(Some(rate_limited_message)) = rate_limiter.decode(&mut BytesMut::new(), Some(logged_message)) {
+                                            // Handle the message
+                                            if let Err(e) = message_handler.handle_message(socket.clone(), rate_limited_message).await {
+                                                error!("Error handling message: {}", e);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        Err(e) => {
+                            error!("Error in policy decoder: {}", e);
+                            break;
+                        },
+                        _ => {} // No data to process
+                    }
+                },
+                Err(e) => {
+                    // Handle error
+                    if let Err(handle_err) = message_handler.exception_caught(socket.clone(), e).await {
+                        error!("Error handling exception: {}", handle_err);
+                    }
+                    break;
+                },
+            }
+            
+            // Check if we should stop
+            if crate::is_shutting_down() {
+                break;
+            }
+        }
+        
+        // Connection closed, unregister the channel
+        if let Err(e) = message_handler.channel_unregistered(socket.clone()).await {
+            error!("Failed to unregister client: {}", e);
+        }
     }
     
     pub fn get_packet_manager(&self) -> Arc<Mutex<PacketManager>> {
